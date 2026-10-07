@@ -1,9 +1,9 @@
 # Metrology Assurance Suite
 
 Metrology Assurance Suite is a Go HTTP service for bounded laboratory
-measurement assurance work. It registers devices, opens verification cases,
-records measurements, handles failed tolerance decisions, and seals traceable
-evidence records.
+measurement assurance work. It registers devices, pauses devices for
+time-bounded maintenance, opens verification cases, records measurements,
+handles failed tolerance decisions, and seals traceable evidence records.
 
 ## Run
 
@@ -22,6 +22,7 @@ go run ./cmd/workflowcheck --workflow open-verification-case
 go run ./cmd/workflowcheck --workflow record-measurement
 go run ./cmd/workflowcheck --workflow reopen-verification-case
 go run ./cmd/workflowcheck --workflow seal-verification
+go run ./cmd/workflowcheck --workflow maintenance-suspension
 ```
 
 The workflow runner starts a fresh in-process HTTP service and exercises the
@@ -36,6 +37,10 @@ or extend these smoke checks with red/green verification tests.
 - `GET /healthz`
 - `POST /devices`
 - `GET /devices/{id}`
+- `POST /devices/{id}/suspensions`
+- `POST /devices/{id}/suspensions/release`
+- `GET /devices/{id}/suspensions`
+- `GET /devices/{id}/events`
 - `POST /cases`
 - `GET /cases/{id}`
 - `POST /cases/{id}/measurements`

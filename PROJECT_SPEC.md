@@ -28,6 +28,10 @@ external service.
   technician, and timestamp.
 - EvidenceSeal: the immutable closing record for a reviewed case, including the
   selected accepted measurement.
+- MaintenanceSuspension: a time-bounded maintenance pause attached to a device,
+  with a reason, actor, start time, expiry limit, and an active, released, or
+  expired status. It is a fact beside the device lifecycle rather than a device
+  state: an active device remains `active` while suspended.
 - AuditEvent: an append-only trace of meaningful case and device changes.
 
 ## Workflows
@@ -65,12 +69,40 @@ The verifier sends `POST /cases/{id}/seal` after an accepted measurement. Only
 measurement with the smallest absolute deviation, creates exactly one evidence
 seal, moves the case to `sealed`, and rejects later mutations.
 
+### 6. Suspend Device For Maintenance
+
+The steward sends `POST /devices/{id}/suspensions` with a reason, actor, and
+expiry time. The device must exist and be active, and it must not already have
+an active suspension. A valid request creates an `active` suspension and
+appends an audit event. While a suspension is active, `POST /cases` for the
+device is rejected with `device_suspended`; every blocked open appends a
+`case_open_blocked` audit event in the same commit as the rejection. Existing
+unfinished cases, historical suspensions, and audit records stay readable.
+
+The steward ends the pause with `POST /devices/{id}/suspensions/release`. A
+suspension whose expiry time has passed is materialized as `expired`
+automatically inside the next locked repository operation. After release or
+expiry, opening a case is admitted again by re-evaluating the current device
+facts (active device and no unfinished case); an end-of-pause never clears an
+unfinished case. Repeated suspensions, automatic expiry, and a pause racing a
+case open all resolve to exactly one outcome under the repository mutation
+lock.
+
 ## State And Rules
 
 Device state:
 
 - `active -> retired`
 - `retired` is terminal.
+- A maintenance suspension is recorded independently of device state: an
+  `active` suspension blocks new cases while the device itself stays `active`.
+
+MaintenanceSuspension state:
+
+- `active -> released` by an explicit release.
+- `active -> expired` when the current time reaches `expires_at`, materialized
+  atomically on the next repository operation that reads the device.
+- `released` and `expired` are terminal; a new pause is a new suspension record.
 
 VerificationCase state:
 
@@ -88,6 +120,13 @@ Required invariants:
 - A tolerance must be positive.
 - A case can have at most one evidence seal.
 - A sealed case cannot accept measurements, reopen, or seal again.
+- A device has at most one active maintenance suspension.
+- A suspension requires a reason, actor, and an expiry time after its start.
+- An active suspension rejects new cases for the device and records each
+  rejection as an auditable device fact in the same repository commit.
+- Release or expiry never changes device lifecycle state and never clears
+  unfinished cases; re-admission is decided from the current device facts.
+- Expired, released, and historical suspensions stay readable.
 - Every mutation that changes a case also appends an audit event in the same
   repository commit.
 
@@ -107,6 +146,10 @@ Required invariants:
 - `GET /healthz`
 - `POST /devices`
 - `GET /devices/{id}`
+- `POST /devices/{id}/suspensions`
+- `POST /devices/{id}/suspensions/release`
+- `GET /devices/{id}/suspensions`
+- `GET /devices/{id}/events`
 - `POST /cases`
 - `GET /cases/{id}`
 - `POST /cases/{id}/measurements`
@@ -121,7 +164,10 @@ bounded production smoke command under `cmd/workflowcheck`. The command starts
 an HTTP test server in the same process, calls the public routes, and verifies
 both success and failure behavior. The seal check also races two concurrent
 seal requests to prove that the repository mutation lock permits exactly one
-seal.
+seal. The maintenance suspension check pauses a device, audits a blocked open,
+releases the pause and re-admits against current facts, verifies automatic
+expiry and re-suspension, and races duplicate pauses together with concurrent
+blocked opens to prove a single deterministic outcome.
 
 Tests are intentionally deferred for this initialization baseline. The later
 engineering-task stage will add unit and integration tests, including red/green

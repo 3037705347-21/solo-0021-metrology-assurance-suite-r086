@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"example.com/solo-0021-metrology-assurance-suite/internal/contracts"
+	"example.com/solo-0021-metrology-assurance-suite/internal/domain"
 )
 
 func (s *Server) health(writer http.ResponseWriter, _ *http.Request) {
@@ -21,16 +22,66 @@ func (s *Server) registerDevice(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusCreated, contracts.DeviceResponse{Device: device})
+	writeJSON(writer, http.StatusCreated, contracts.DeviceResponse{
+		Device:      device,
+		Suspensions: []domain.MaintenanceSuspension{},
+		Events:      []domain.AuditEvent{},
+	})
 }
 
 func (s *Server) device(writer http.ResponseWriter, request *http.Request) {
-	device, err := s.service.Device(request.Context(), request.PathValue("id"))
+	view, err := s.service.Device(request.Context(), request.PathValue("id"))
 	if err != nil {
 		writeError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, contracts.DeviceResponse{Device: device})
+	writeJSON(writer, http.StatusOK, view)
+}
+
+func (s *Server) startSuspension(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeJSON[contracts.StartSuspensionRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	view, err := s.service.StartSuspension(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, view)
+}
+
+func (s *Server) releaseSuspension(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeJSON[contracts.ReleaseSuspensionRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	view, err := s.service.ReleaseSuspension(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, view)
+}
+
+func (s *Server) suspensions(writer http.ResponseWriter, request *http.Request) {
+	view, err := s.service.Suspensions(request.Context(), request.PathValue("id"))
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, view)
+}
+
+func (s *Server) deviceEvents(writer http.ResponseWriter, request *http.Request) {
+	view, err := s.service.DeviceEvents(request.Context(), request.PathValue("id"))
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, view)
 }
 
 func (s *Server) openCase(writer http.ResponseWriter, request *http.Request) {

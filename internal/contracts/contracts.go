@@ -1,6 +1,10 @@
 package contracts
 
-import "example.com/solo-0021-metrology-assurance-suite/internal/domain"
+import (
+	"time"
+
+	"example.com/solo-0021-metrology-assurance-suite/internal/domain"
+)
 
 type RegisterDeviceRequest struct {
 	AssetTag string `json:"asset_tag"`
@@ -31,8 +35,34 @@ type SealCaseRequest struct {
 	Summary  string `json:"summary"`
 }
 
+type StartSuspensionRequest struct {
+	Reason    string    `json:"reason"`
+	Actor     string    `json:"actor"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+type ReleaseSuspensionRequest struct {
+	Actor string `json:"actor"`
+	Note  string `json:"note"`
+}
+
 type DeviceResponse struct {
-	Device domain.Device `json:"device"`
+	Device      domain.Device                  `json:"device"`
+	Suspensions []domain.MaintenanceSuspension `json:"suspensions"`
+	Suspension  *domain.MaintenanceSuspension  `json:"suspension,omitempty"`
+	Events      []domain.AuditEvent            `json:"events"`
+}
+
+type SuspensionResponse struct {
+	Suspension domain.MaintenanceSuspension `json:"suspension"`
+}
+
+type SuspensionsResponse struct {
+	Suspensions []domain.MaintenanceSuspension `json:"suspensions"`
+}
+
+type DeviceEventsResponse struct {
+	Events []domain.AuditEvent `json:"events"`
 }
 
 type CaseResponse struct {

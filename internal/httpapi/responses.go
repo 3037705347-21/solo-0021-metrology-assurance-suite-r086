@@ -56,6 +56,8 @@ func errorStatus(err error) (int, string) {
 		return http.StatusConflict, "duplicate_asset_tag"
 	case errors.Is(err, domain.ErrActiveCaseExists):
 		return http.StatusConflict, "active_case_exists"
+	case errors.Is(err, domain.ErrDeviceSuspended):
+		return http.StatusConflict, "device_suspended"
 	case errors.Is(err, domain.ErrSealAlreadyCreated):
 		return http.StatusConflict, "seal_exists"
 	case errors.Is(err, domain.ErrStateConflict):

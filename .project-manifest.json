@@ -155,6 +155,29 @@
         "contracts",
         "bootstrap"
       ]
+    },
+    {
+      "id": "maintenance-suspension",
+      "name": "Device maintenance suspension",
+      "entry": "POST /devices/{id}/suspensions",
+      "steps": [
+        "start a time-bounded suspension with reason, actor, and expiry",
+        "reject new case opens for the device and audit each blocked request",
+        "release the suspension or let it expire at its time limit",
+        "re-admit case opens against the current device facts after the pause ends"
+      ],
+      "success": "returns the active suspension and blocks case opens until release or expiry",
+      "failure": "returns conflict for a duplicate active suspension or an open attempt during a pause",
+      "verification": "workflowcheck pauses a device, audits blocked opens, releases and re-admits, verifies automatic expiry, and races duplicate pauses and concurrent blocked opens",
+      "module_ids": [
+        "runtimecheck",
+        "httpapi",
+        "assurance",
+        "domain",
+        "repository",
+        "contracts",
+        "bootstrap"
+      ]
     }
   ],
   "complexity": {

@@ -52,6 +52,20 @@
         "only an accepted measurement may be selected",
         "the smallest absolute deviation wins when several accepted measurements exist"
       ]
+    },
+    {
+      "id": "maintenance_suspension",
+      "label": "Maintenance suspension",
+      "relations": [
+        "maintenance_suspension.device_id belongs_to device.id"
+      ],
+      "invariants": [
+        "a device has at most one active suspension",
+        "reason and actor are required and retained",
+        "expiry must be after the start time",
+        "a suspension never mutates device lifecycle state",
+        "released and expired suspensions stay readable"
+      ]
     }
   ],
   "state_machines": [
@@ -65,7 +79,26 @@
         "active->retired"
       ],
       "invariants": [
-        "retired devices cannot open new cases"
+        "retired devices cannot open new cases",
+        "an active maintenance suspension blocks new cases without changing device state"
+      ]
+    },
+    {
+      "subject": "maintenance_suspension",
+      "states": [
+        "active",
+        "released",
+        "expired"
+      ],
+      "transitions": [
+        "active->released",
+        "active->expired"
+      ],
+      "invariants": [
+        "active is the only state that blocks case opens",
+        "expiry is evaluated against expires_at and materialized inside one locked commit",
+        "a blocked open and its audit event resolve in the same commit",
+        "terminal suspension states never transition again"
       ]
     },
     {
@@ -189,6 +222,11 @@
       "workflow_id": "seal-verification",
       "description": "Concurrent reviewers may both observe a ready case; only an atomic commit that rechecks state and seal uniqueness permits one seal",
       "observable_failure": "two seals are created, or the response claims success while no sealed case is readable"
+    },
+    {
+      "workflow_id": "maintenance-suspension",
+      "description": "A pause can be an informal manual refusal or a recorded device fact; only an explicit suspension with reason and expiry lets blocked opens be audited and re-admission be re-evaluated against current facts",
+      "observable_failure": "a case opens during a pause, a blocked request leaves no trace, or two concurrent pauses/open races end with more than one outcome"
     }
   ]
 }

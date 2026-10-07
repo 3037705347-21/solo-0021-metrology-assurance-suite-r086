@@ -40,6 +40,7 @@ func main() {
 		"record-measurement":       checkRecordMeasurement,
 		"reopen-verification-case": checkReopenVerificationCase,
 		"seal-verification":        checkSealVerification,
+		"maintenance-suspension":   checkMaintenanceSuspension,
 	}
 	run, ok := checks[*workflow]
 	if !ok {
@@ -373,6 +374,440 @@ func checkSealVerification() error {
 		return errors.New("evidence seal is missing")
 	}
 	return nil
+}
+
+func checkMaintenanceSuspension() error {
+	if err := checkSuspensionManualLifecycle(); err != nil {
+		return err
+	}
+	if err := checkSuspensionAutoExpiry(); err != nil {
+		return err
+	}
+	return checkSuspensionConcurrency()
+}
+
+func checkSuspensionManualLifecycle() error {
+	h := newHarness()
+	defer h.close()
+
+	deviceID, err := h.createDevice("MET-1501")
+	if err != nil {
+		return err
+	}
+
+	expiry := time.Now().UTC().Add(2 * time.Hour)
+	started, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions", map[string]any{
+		"reason":     "scheduled calibration bench maintenance",
+		"actor":      "Lin",
+		"expires_at": expiry.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(started, http.StatusCreated); err != nil {
+		return err
+	}
+	suspensionID, err := nestedString(started.Body, "suspension", "id")
+	if err != nil {
+		return err
+	}
+	if state, err := nestedString(started.Body, "suspension", "status"); err != nil || state != "active" {
+		return fmt.Errorf("started suspension status = %q", state)
+	}
+
+	duplicate, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions", map[string]any{
+		"reason":     "duplicate pause request",
+		"actor":      "Mira",
+		"expires_at": expiry.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(duplicate, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(duplicate, "state_conflict"); err != nil {
+		return err
+	}
+
+	blocked, err := h.request(http.MethodPost, "/cases", map[string]any{
+		"device_id": deviceID,
+		"nominal":   25.0,
+		"tolerance": 0.5,
+		"steward":   "Qiao",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(blocked, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(blocked, "device_suspended"); err != nil {
+		return err
+	}
+
+	deviceView, err := h.request(http.MethodGet, "/devices/"+deviceID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(deviceView, http.StatusOK); err != nil {
+		return err
+	}
+	if state, err := nestedString(deviceView.Body, "device", "status"); err != nil || state != "active" {
+		return fmt.Errorf("suspended device status = %q, expected active", state)
+	}
+	if current, err := nestedString(deviceView.Body, "suspension", "id"); err != nil || current != suspensionID {
+		return fmt.Errorf("device view did not expose active suspension %q, got %q", suspensionID, current)
+	}
+	blockedCount := countEvents(deviceView.Body, "case_open_blocked")
+	if blockedCount != 1 {
+		return fmt.Errorf("blocked open attempts recorded = %d, expected 1", blockedCount)
+	}
+	if startedCount := countEvents(deviceView.Body, "suspension_started"); startedCount != 1 {
+		return fmt.Errorf("suspension_started events = %d, expected 1", startedCount)
+	}
+
+	// Unfinished cases opened before the suspension stay readable; here the
+	// device view itself and the suspension history prove history is retained.
+	history, err := h.request(http.MethodGet, "/devices/"+deviceID+"/suspensions", nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(history, http.StatusOK); err != nil {
+		return err
+	}
+	past, err := nestedSlice(history.Body, "suspensions")
+	if err != nil {
+		return err
+	}
+	if len(past) != 1 {
+		return fmt.Errorf("suspension history length = %d, expected 1", len(past))
+	}
+
+	released, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions/release", map[string]any{
+		"actor": "Lin",
+		"note":  "calibration bench restored to service",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(released, http.StatusOK); err != nil {
+		return err
+	}
+	if state, err := nestedString(released.Body, "suspension", "status"); err != nil || state != "released" {
+		return fmt.Errorf("released suspension status = %q", state)
+	}
+
+	releaseAgain, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions/release", map[string]any{
+		"actor": "Lin",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(releaseAgain, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(releaseAgain, "state_conflict"); err != nil {
+		return err
+	}
+
+	// After release, admission is re-evaluated against the current device
+	// facts: active, no unfinished case -> a case opens.
+	opened, err := h.openCase(deviceID)
+	if err != nil {
+		return err
+	}
+	caseID, err := nestedString(opened.Body, "case", "id")
+	if err != nil {
+		return err
+	}
+	read, err := h.request(http.MethodGet, "/cases/"+caseID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(read, http.StatusOK); err != nil {
+		return err
+	}
+
+	// The unfinished case opened after release blocks a fresh pause ending in
+	// a new admission, but starting another pause while the case exists is an
+	// independent device fact and remains allowed.
+	secondExpiry := time.Now().UTC().Add(time.Hour)
+	pausedAgain, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions", map[string]any{
+		"reason":     "follow-up site inspection",
+		"actor":      "Lin",
+		"expires_at": secondExpiry.Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(pausedAgain, http.StatusCreated); err != nil {
+		return err
+	}
+	secondID, err := nestedString(pausedAgain.Body, "suspension", "id")
+	if err != nil {
+		return err
+	}
+
+	// The pre-existing unfinished case stays fully readable during the pause.
+	readDuringPause, err := h.request(http.MethodGet, "/cases/"+caseID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(readDuringPause, http.StatusOK); err != nil {
+		return err
+	}
+	if state, err := nestedString(readDuringPause.Body, "case", "state"); err != nil || state != "awaiting_measurement" {
+		return fmt.Errorf("unfinished case during suspension state = %q", state)
+	}
+
+	// Release does not clear the unfinished case, so admission must still be
+	// denied by the current device facts (active_case_exists), not silently
+	// reopened.
+	if _, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions/release", map[string]any{
+		"actor": "Lin",
+	}); err != nil {
+		return err
+	}
+	secondOpen, err := h.request(http.MethodPost, "/cases", map[string]any{
+		"device_id": deviceID,
+		"nominal":   25.0,
+		"tolerance": 0.5,
+		"steward":   "Qiao",
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(secondOpen, http.StatusConflict); err != nil {
+		return err
+	}
+	if err := expectErrorCode(secondOpen, "active_case_exists"); err != nil {
+		return err
+	}
+
+	history, err = h.request(http.MethodGet, "/devices/"+deviceID+"/suspensions", nil)
+	if err != nil {
+		return err
+	}
+	past, err = nestedSlice(history.Body, "suspensions")
+	if err != nil {
+		return err
+	}
+	if len(past) != 2 {
+		return fmt.Errorf("suspension history length = %d, expected 2", len(past))
+	}
+	secondRecord, ok := past[1].(map[string]any)
+	if !ok || secondRecord["id"] != secondID {
+		return fmt.Errorf("suspension history did not retain second pause %q", secondID)
+	}
+	if status, _ := secondRecord["status"].(string); status != "released" {
+		return fmt.Errorf("second suspension history status = %q, expected released", status)
+	}
+	return nil
+}
+
+func checkSuspensionAutoExpiry() error {
+	h := newHarness()
+	defer h.close()
+
+	deviceID, err := h.createDevice("MET-1502")
+	if err != nil {
+		return err
+	}
+	started, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions", map[string]any{
+		"reason":     "short maintenance window",
+		"actor":      "Lin",
+		"expires_at": time.Now().UTC().Add(1500 * time.Millisecond).Format(time.RFC3339Nano),
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(started, http.StatusCreated); err != nil {
+		return err
+	}
+
+	time.Sleep(2 * time.Second)
+
+	// Crossing the time limit without an explicit release must materialize a
+	// single expired fact on the next device observation.
+	view, err := h.request(http.MethodGet, "/devices/"+deviceID, nil)
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(view, http.StatusOK); err != nil {
+		return err
+	}
+	if _, present := view.Body["suspension"]; present {
+		return errors.New("expired suspension was still presented as active")
+	}
+	if count := countEvents(view.Body, "suspension_expired"); count != 1 {
+		return fmt.Errorf("suspension_expired events = %d, expected 1", count)
+	}
+
+	// Once expired, admission is evaluated against the current facts and a
+	// case opens; a new pause can then be established on the same device.
+	if _, err := h.openCase(deviceID); err != nil {
+		return err
+	}
+
+	restart, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions", map[string]any{
+		"reason":     "new maintenance window after expiry",
+		"actor":      "Mira",
+		"expires_at": time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+	if err := expectStatus(restart, http.StatusCreated); err != nil {
+		return err
+	}
+	if state, err := nestedString(restart.Body, "suspension", "status"); err != nil || state != "active" {
+		return fmt.Errorf("restarted suspension status = %q", state)
+	}
+
+	history, err := h.request(http.MethodGet, "/devices/"+deviceID+"/suspensions", nil)
+	if err != nil {
+		return err
+	}
+	past, err := nestedSlice(history.Body, "suspensions")
+	if err != nil {
+		return err
+	}
+	if len(past) != 2 {
+		return fmt.Errorf("post-expiry suspension history length = %d, expected 2", len(past))
+	}
+	first, _ := past[0].(map[string]any)
+	if status, _ := first["status"].(string); status != "expired" {
+		return fmt.Errorf("first suspension history status = %q, expected expired", status)
+	}
+	return nil
+}
+
+func checkSuspensionConcurrency() error {
+	h := newHarness()
+	defer h.close()
+
+	deviceID, err := h.createDevice("MET-1503")
+	if err != nil {
+		return err
+	}
+	expiry := time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339)
+
+	type outcome struct {
+		status int
+		err    error
+	}
+
+	// Duplicate concurrent pauses resolve to exactly one suspension.
+	results := make(chan outcome, 2)
+	var wait sync.WaitGroup
+	for index := 0; index < 2; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			response, err := h.request(http.MethodPost, "/devices/"+deviceID+"/suspensions", map[string]any{
+				"reason":     fmt.Sprintf("maintenance request %d", index+1),
+				"actor":      fmt.Sprintf("Steward-%d", index+1),
+				"expires_at": expiry,
+			})
+			if err != nil {
+				results <- outcome{err: err}
+				return
+			}
+			results <- outcome{status: response.Status}
+		}(index)
+	}
+	wait.Wait()
+	close(results)
+
+	created := 0
+	conflicts := 0
+	for item := range results {
+		if item.err != nil {
+			return item.err
+		}
+		switch item.status {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			return fmt.Errorf("unexpected concurrent suspension status %d", item.status)
+		}
+	}
+	if created != 1 || conflicts != 1 {
+		return fmt.Errorf("concurrent suspension outcomes: %d created, %d conflict", created, conflicts)
+	}
+
+	// Concurrent open-case requests during the pause must all fail, and the
+	// rejection of each one is an auditable device fact.
+	openResults := make(chan outcome, 3)
+	for index := 0; index < 3; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			response, err := h.request(http.MethodPost, "/cases", map[string]any{
+				"device_id": deviceID,
+				"nominal":   25.0,
+				"tolerance": 0.5,
+				"steward":   fmt.Sprintf("Qiao-%d", index+1),
+			})
+			if err != nil {
+				openResults <- outcome{err: err}
+				return
+			}
+			openResults <- outcome{status: response.Status}
+		}(index)
+	}
+	wait.Wait()
+	close(openResults)
+
+	for item := range openResults {
+		if item.err != nil {
+			return item.err
+		}
+		if item.status != http.StatusConflict {
+			return fmt.Errorf("concurrent open during suspension status = %d, expected 409", item.status)
+		}
+	}
+
+	view, err := h.request(http.MethodGet, "/devices/"+deviceID, nil)
+	if err != nil {
+		return err
+	}
+	if count := countEvents(view.Body, "case_open_blocked"); count != 3 {
+		return fmt.Errorf("concurrent blocked attempts recorded = %d, expected 3", count)
+	}
+	history, err := h.request(http.MethodGet, "/devices/"+deviceID+"/suspensions", nil)
+	if err != nil {
+		return err
+	}
+	past, err := nestedSlice(history.Body, "suspensions")
+	if err != nil {
+		return err
+	}
+	if len(past) != 1 {
+		return fmt.Errorf("concurrent pauses stored = %d, expected exactly one suspension", len(past))
+	}
+	return nil
+}
+
+func countEvents(root map[string]any, kind string) int {
+	items, err := nestedSlice(root, "events")
+	if err != nil {
+		return 0
+	}
+	count := 0
+	for _, item := range items {
+		event, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if event["kind"] == kind {
+			count++
+		}
+	}
+	return count
 }
 
 func newHarness() *harness {
