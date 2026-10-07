@@ -1,6 +1,10 @@
 package contracts
 
-import "example.com/solo-0021-metrology-assurance-suite/internal/domain"
+import (
+	"time"
+
+	"example.com/solo-0021-metrology-assurance-suite/internal/domain"
+)
 
 type RegisterDeviceRequest struct {
 	AssetTag string `json:"asset_tag"`
@@ -31,8 +35,22 @@ type SealCaseRequest struct {
 	Summary  string `json:"summary"`
 }
 
+// StartPauseRequest bounds a maintenance window either by duration or by an
+// explicit RFC3339 expiry. Exactly one of the two must be present.
+type StartPauseRequest struct {
+	Reason          string     `json:"reason"`
+	RequestedBy     string     `json:"requested_by"`
+	DurationMinutes int        `json:"duration_minutes,omitempty"`
+	ExpiresAt       *time.Time `json:"expires_at,omitempty"`
+}
+
+type ReleasePauseRequest struct {
+	ReleasedBy string `json:"released_by"`
+}
+
 type DeviceResponse struct {
-	Device domain.Device `json:"device"`
+	Device       domain.Device            `json:"device"`
+	CurrentPause *domain.MaintenancePause `json:"current_pause,omitempty"`
 }
 
 type CaseResponse struct {
@@ -44,6 +62,14 @@ type CaseResponse struct {
 
 type EventsResponse struct {
 	Events []domain.AuditEvent `json:"events"`
+}
+
+type PauseResponse struct {
+	Pause domain.MaintenancePause `json:"pause"`
+}
+
+type PausesResponse struct {
+	Pauses []domain.MaintenancePause `json:"pauses"`
 }
 
 type ErrorResponse struct {

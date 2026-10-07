@@ -16,21 +16,21 @@ func (s *Server) registerDevice(writer http.ResponseWriter, request *http.Reques
 		writeError(writer, err)
 		return
 	}
-	device, err := s.service.RegisterDevice(request.Context(), input)
+	view, err := s.service.RegisterDevice(request.Context(), input)
 	if err != nil {
 		writeError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusCreated, contracts.DeviceResponse{Device: device})
+	writeJSON(writer, http.StatusCreated, view)
 }
 
 func (s *Server) device(writer http.ResponseWriter, request *http.Request) {
-	device, err := s.service.Device(request.Context(), request.PathValue("id"))
+	view, err := s.service.Device(request.Context(), request.PathValue("id"))
 	if err != nil {
 		writeError(writer, err)
 		return
 	}
-	writeJSON(writer, http.StatusOK, contracts.DeviceResponse{Device: device})
+	writeJSON(writer, http.StatusOK, view)
 }
 
 func (s *Server) openCase(writer http.ResponseWriter, request *http.Request) {
@@ -105,4 +105,59 @@ func (s *Server) events(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	writeJSON(writer, http.StatusOK, contracts.EventsResponse{Events: view.Events})
+}
+
+func (s *Server) startPause(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeJSON[contracts.StartPauseRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	view, err := s.service.StartMaintenancePause(request.Context(), request.PathValue("id"), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, view)
+}
+
+func (s *Server) releasePause(writer http.ResponseWriter, request *http.Request) {
+	input, err := decodeJSON[contracts.ReleasePauseRequest](writer, request)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	view, err := s.service.ReleaseMaintenancePause(request.Context(), request.PathValue("pauseId"), input)
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, view)
+}
+
+func (s *Server) pauseView(writer http.ResponseWriter, request *http.Request) {
+	view, err := s.service.Pause(request.Context(), request.PathValue("pauseId"))
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, view)
+}
+
+func (s *Server) devicePauses(writer http.ResponseWriter, request *http.Request) {
+	view, err := s.service.DevicePauses(request.Context(), request.PathValue("id"))
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, view)
+}
+
+func (s *Server) deviceEvents(writer http.ResponseWriter, request *http.Request) {
+	view, err := s.service.DeviceEvents(request.Context(), request.PathValue("id"))
+	if err != nil {
+		writeError(writer, err)
+		return
+	}
+	writeJSON(writer, http.StatusOK, view)
 }
